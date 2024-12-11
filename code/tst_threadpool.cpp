@@ -236,13 +236,13 @@ TEST_F(ThreadpoolTest, testCase2)
 
     // Starts the runnables
     for(int i = 0; i < 100; i++) {
-        printf("Started new loop with i = %d\n", i);
+        // printf("Started new loop with i = %d\n", i);
         std::string runnableId = "Run" + std::to_string(i);
         auto runnable = std::make_unique<TestRunnable>(this, runnableId);
         runnableStarted(runnableId);
-        printf("About to start a new runnable, id: %d\n", i);
+        // printf("About to start a new runnable, id: %d\n", i);
         bool startStatus = pool.start(std::move(runnable));
-        printf("Started a new runnable, id: %d\n", i);
+        // printf("Started a new runnable, id: %d\n", i);
         EXPECT_TRUE(startStatus);
     }
 
