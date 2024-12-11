@@ -38,11 +38,20 @@ public:
 class ThreadPool {
 public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
-        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout) {
-    }
+        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout) {}
 
     ~ThreadPool() {
         // TODO : End smoothly
+
+        mutex.lock();
+        stop = true;
+        mutex.unlock();
+        condition.notifyAll();
+        for (auto& thread : threads) {
+            if (tread.joinable()) {
+                thread.join();
+            }
+        }
     }
 
     /*
@@ -57,6 +66,45 @@ public:
      */
     bool start(std::unique_ptr<Runnable> runnable) {
         // TODO
+
+        mutex.lock();
+        // Check if there is an available thread
+        if (idleThreads) {
+            // Add the runnable to the queue
+            queue.push(std::move(runnable));
+            // Notify a thread
+            mutex.unlock();
+            condition.notifyOne();
+            // Return true
+            return true;
+        }
+        // Else check if the pool can grow
+        else if (threads.size() < maxThreadCount) {
+            // Create a new thread
+            threads.emplace_back(&ThreadPool::workerThread, this);
+            // Add the runnable to the queue
+            queue.push(std::move(runnable));
+            // Notify a thread
+            mutex.unlock();
+            condition.notifyOne();
+            // Return true
+            return true;
+        }
+        // Else check if less than max are waiting
+        else if (queue.size() < maxNbWaiting) {
+            // Block caller until a thread is available
+            wait(condition); // NECESSARY? JUST ADD TO QUEUE?? BUT THEN WHERE USE MONITOR???
+            // Add the runnable to the queue
+            queue.push(std::move(runnable));
+            // Notify a thread
+            mutex.unlock();
+            condition.notifyOne();
+            // Return true
+            return true;
+        }
+        // Else
+            // Return false
+        mutex.unlock();
         return false;
     }
 
@@ -65,7 +113,12 @@ public:
      */
     size_t currentNbThreads() {
         // TODO
-        return 0;
+
+        mutex.lock();
+        size_t count = threads.size();
+        mutex.unlock();
+
+        return count;
     }
 
 private:
@@ -73,6 +126,13 @@ private:
     size_t maxThreadCount;
     size_t maxNbWaiting;
     std::chrono::milliseconds idleTimeout;
+
+    std::vector<std::thread> threads; // Thread pool
+    std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
+    PcoMutex mutex;
+    PcoConditionVariable condition;
+    size_t idleThreads; // Keep count of number of inactive threads
+    bool stop;  // Signals termination
 };
 
 #endif // THREADPOOL_H
