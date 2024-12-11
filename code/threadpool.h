@@ -6,10 +6,12 @@
 #include <vector>
 #include <chrono>
 #include <cassert>
+#include <memory>
 #include <pcosynchro/pcologger.h>
 #include <pcosynchro/pcothread.h>
 #include <pcosynchro/pcomutex.h>
 #include <pcosynchro/pcoconditionvariable.h>
+#include <queue>
 
 class Runnable {
 public:
@@ -38,7 +40,7 @@ public:
 class ThreadPool {
 public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
-        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout) {}
+        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0) {}
 
     ~ThreadPool() {
         // TODO : End smoothly
@@ -48,7 +50,7 @@ public:
         mutex.unlock();
         condition.notifyAll();
         for (auto& thread : threads) {
-            if (tread.joinable()) {
+            if (thread.joinable()) {
                 thread.join();
             }
         }
@@ -67,9 +69,12 @@ public:
     bool start(std::unique_ptr<Runnable> runnable) {
         // TODO
 
+        // printf("Starting\n");
+
         mutex.lock();
         // Check if there is an available thread
-        if (idleThreads) {
+        if (idleThreads != 0) {
+            // printf("There are available threads\n");
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // Notify a thread
@@ -80,6 +85,7 @@ public:
         }
         // Else check if the pool can grow
         else if (threads.size() < maxThreadCount) {
+            // printf("The pool can grow\n");
             // Create a new thread
             threads.emplace_back(&ThreadPool::workerThread, this);
             // Add the runnable to the queue
@@ -92,8 +98,9 @@ public:
         }
         // Else check if less than max are waiting
         else if (queue.size() < maxNbWaiting) {
+            // printf("Need to wait\n");
             // Block caller until a thread is available
-            wait(condition); // NECESSARY? JUST ADD TO QUEUE?? BUT THEN WHERE USE MONITOR???
+            condition.wait(&mutex); // HOARE? NECESSARY? JUST ADD TO QUEUE?? BUT THEN WHERE USE MONITOR???
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // Notify a thread
@@ -122,6 +129,41 @@ public:
     }
 
 private:
+
+    void workerThread() {
+        while (true) {
+            std::unique_ptr<Runnable> runnable;
+            mutex.lock();
+            ++idleThreads;
+
+            // Wait for task or timeout
+            while (!stop && queue.empty()) {
+                if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
+                    if (idleThreads == 0 && threads.size() > 1) {
+                        break;
+                    }
+                }
+            }
+
+            if (stop && queue.empty()) {
+                --idleThreads;
+                mutex.unlock();
+                return;
+            }
+
+            if (!queue.empty()) {
+                runnable = std::move(queue.front());
+                queue.pop();
+            }
+
+            --idleThreads;
+            mutex.unlock();
+            if (runnable) {
+                // printf("About to run runnable\n");
+                runnable->run();
+            }
+        }
+    }
 
     size_t maxThreadCount;
     size_t maxNbWaiting;
