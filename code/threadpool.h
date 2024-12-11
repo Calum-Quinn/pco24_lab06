@@ -12,6 +12,7 @@
 #include <pcosynchro/pcomutex.h>
 #include <pcosynchro/pcoconditionvariable.h>
 #include <queue>
+#include <string>
 
 class Runnable {
 public:
@@ -40,7 +41,7 @@ public:
 class ThreadPool {
 public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
-        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0) {}
+        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0), stop(false) {}
 
     ~ThreadPool() {
         // TODO : End smoothly
@@ -98,11 +99,10 @@ public:
         }
         // Else check if less than max are waiting
         else if (queue.size() < maxNbWaiting) {
-            // printf("Need to wait\n");
-            // Block caller until a thread is available
-            condition.wait(&mutex); // HOARE? NECESSARY? JUST ADD TO QUEUE?? BUT THEN WHERE USE MONITOR???
+            // printf("Need to wait, queue size: %d\n", queue.size());
             // Add the runnable to the queue
             queue.push(std::move(runnable));
+            // ??? Block caller until a thread is available ???
             // Notify a thread
             mutex.unlock();
             condition.notifyOne();
@@ -110,8 +110,10 @@ public:
             return true;
         }
         // Else
-            // Return false
+            // Cancel the runnable
+        runnable->cancelRun();
         mutex.unlock();
+            // Return false
         return false;
     }
 
@@ -132,16 +134,25 @@ private:
 
     void workerThread() {
         while (true) {
+
+            // printf("Thread starting run\n");
+
             std::unique_ptr<Runnable> runnable;
             mutex.lock();
             ++idleThreads;
 
             // Wait for task or timeout
             while (!stop && queue.empty()) {
+                // printf("Not stop but no tasks\n");
+
+                // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
-                    if (idleThreads == 0 && threads.size() > 1) {
-                        break;
-                    }
+                    // Terminate the thread
+                    --idleThreads;
+                    mutex.unlock();
+                    return;
+
+                    // NEED MECHANISM FOR REMOVING THREAD FROM LIST OF THREADS
                 }
             }
 
@@ -161,6 +172,7 @@ private:
             if (runnable) {
                 // printf("About to run runnable\n");
                 runnable->run();
+                // printf("Just finished running id: %s\n", runnable->id().c_str());
             }
         }
     }
@@ -172,7 +184,7 @@ private:
     std::vector<std::thread> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
     PcoMutex mutex;
-    PcoConditionVariable condition;
+    PcoConditionVariable condition; // To make threads wait for new tasks
     size_t idleThreads; // Keep count of number of inactive threads
     bool stop;  // Signals termination
 };
