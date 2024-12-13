@@ -54,16 +54,12 @@ public:
         // Notify all threads so they terminate
         condition.notifyAll();
 
+        // Join all threads
         for (auto& thread : threads) {
             if (thread.joinable()) {
                 thread.join();
             }
         }
-
-        // Remove all threads from the list
-        mutex.lock();
-        threads.clear();
-        mutex.unlock();
     }
 
     /*
@@ -80,6 +76,8 @@ public:
         // TODO
 
         // printf("Starting\n");
+
+        removeThreads();
 
         mutex.lock();
         // Check if there is an available thread
@@ -146,17 +144,17 @@ private:
 
             // printf("Thread starting run\n");
 
-            std::unique_ptr<Runnable> runnable;
+            std::unique_ptr<Runnable> task;
             mutex.lock();
             // Initialise timeout token
             threadTimeouts[std::this_thread::get_id()] = false;
             ++idleThreads;
 
             while (!stop && queue.empty()) {
-                // Check whether threads can be removed
-                mutex.unlock();
-                removeThreads();
-                mutex.lock();
+                // mutex.unlock();
+                // removeThreads();
+                // mutex.lock();
+
 
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
@@ -168,22 +166,22 @@ private:
                 }
             }
 
+            // Check is termination was requested and the queue is empty
             if (stop && queue.empty()) {
                 --idleThreads;
                 mutex.unlock();
                 return;
             }
 
-            if (!queue.empty()) {
-                runnable = std::move(queue.front());
-                queue.pop();
-            }
-
+            // Choose the next task in the queue
+            task = std::move(queue.front());
+            queue.pop();
             --idleThreads;
             mutex.unlock();
-            if (runnable) {
+
+            if (task) {
                 // printf("About to run runnable\n");
-                runnable->run();
+                task->run();
                 // printf("Just finished running id: %s\n", runnable->id().c_str());
             }
         }
@@ -193,26 +191,25 @@ private:
      * @brief removes all threads that timed out
      */
     void removeThreads() {
-        mutex.lock();
+        mutex.lock(); // Lock to ensure thread safety
         for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
-            // If timeout
+            // Check if the thread has timed out
             if (it->second) {
-
-                
+                // Find the thread in the threads vector
                 auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
                     return t.get_id() == it->first;
                 });
 
-                // If the thread is finished, delete it from the list
+                // If the thread is found and is joinable, join it and remove from the threads vector
                 if (threadIt != threads.end() && threadIt->joinable()) {
-                    threadIt->join();
-                    threads.erase(threadIt);
+                    threadIt->join(); // Wait for the thread to finish
+                    threads.erase(threadIt); // Remove the thread from the pool
                 }
-                // Remove from map
+
+                // Remove from the timeout tracking map
                 it = threadTimeouts.erase(it);
-            }
-            else {
-                ++it;
+            } else {
+                ++it; // Move to the next element if not timed out
             }
         }
         mutex.unlock();
