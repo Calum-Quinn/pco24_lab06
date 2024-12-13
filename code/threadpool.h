@@ -75,12 +75,9 @@ public:
     bool start(std::unique_ptr<Runnable> runnable) {
         // TODO
 
-        // printf("Starting\n");
-
         mutex.lock();
         // Check if there is an available thread
         if (idleThreads > 0) {
-            // printf("There are available threads\n");
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // Notify a thread
@@ -91,7 +88,6 @@ public:
         }
         // Else check if the pool can grow
         else if (threads.size() < maxThreadCount) {
-            // printf("The pool can grow\n");
             // Create a new thread
             threads.emplace_back(&ThreadPool::workerThread, this);
             // Add the runnable to the queue
@@ -104,7 +100,6 @@ public:
         }
         // Else check if less than max are waiting
         else if (queue.size() < maxNbWaiting) {
-            // printf("Need to wait, queue size: %d\n", queue.size());
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // ??? Block caller until a thread is available ???
@@ -139,27 +134,19 @@ private:
 
     void workerThread() {
         while (true) {
-
-            // printf("Thread starting run\n");
-
             std::unique_ptr<Runnable> task;
             mutex.lock();
             // Initialise timeout token
-            // threadTimeouts[std::this_thread::get_id()] = false;
             ++idleThreads;
 
             while (!stop && queue.empty()) {
-                // mutex.unlock();
-                // removeThreads();
-                // mutex.lock();
-
-
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
                     // Start procedure to remove thread once it terminates
+                    mutex.unlock();
                     removeThread(std::this_thread::get_id()); // Will wait for signal
-                    // Terminate the thread and notify of timeout
-                    // threadTimeouts[std::this_thread::get_id()] = true;
+                    mutex.lock();
+
                     --idleThreads;
                     cleanup.notifyOne(); // Signal that thread can be removed
                     mutex.unlock();
@@ -181,9 +168,7 @@ private:
             mutex.unlock();
 
             if (task) {
-                // printf("About to run runnable\n");
                 task->run();
-                // printf("Just finished running id: %s\n", runnable->id().c_str());
             }
         }
     }
@@ -222,6 +207,7 @@ private:
     void removeThread(std::thread::id id) {
         mutex.lock();
         // Wait for thread to need cleaning up
+        printf("Then here\n");
         cleanup.wait(&mutex);
 
         // Find the thread in the list
@@ -244,7 +230,6 @@ private:
     std::chrono::milliseconds idleTimeout;
 
     std::vector<std::thread> threads; // Thread pool
-    // std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
     PcoMutex mutex;
     PcoConditionVariable condition; // To make threads wait for new tasks
