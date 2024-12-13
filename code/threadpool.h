@@ -133,6 +133,15 @@ public:
 private:
 
     void workerThread() {
+        std::thread::id id = std::this_thread::get_id();
+        // Start procedure to remove thread if it times out
+        threadTimeouts[id] == false;
+
+
+        // THIS COMMAND BLOCKS THE EXECUTION OF THE THREAD !!!!!!
+        // WE NEED A WAY OF WAITING THAT CAN BE SIGNALED FOR A SPECIFIC THREAD BUT ONLY WHEN THE THREAD HAS TIMED OUT
+        // removeThread(id); // Will wait for signal
+        
         while (true) {
             std::unique_ptr<Runnable> task;
             mutex.lock();
@@ -142,11 +151,8 @@ private:
             while (!stop && queue.empty()) {
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
-                    // Start procedure to remove thread once it terminates
-                    mutex.unlock();
-                    removeThread(std::this_thread::get_id()); // Will wait for signal
-                    mutex.lock();
-
+                    // Indicate that thread can be removed once signaled
+                    threadTimeouts[id] = true;
                     --idleThreads;
                     cleanup.notifyOne(); // Signal that thread can be removed
                     mutex.unlock();
@@ -173,56 +179,42 @@ private:
         }
     }
 
-    /**
-     * @brief removes all threads that timed out
-     */
-    // void removeThreads() {
-    //     mutex.lock();
-    //     for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
-    //         // Check if the thread has timed out
-    //         if (it->second) {
-    //             // Find the thread in the threads vector
-    //             auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
-    //                 return t.get_id() == it->first;
-    //             });
 
-    //             // If the thread is found and is joinable, join it and remove from the threads vector
-    //             if (threadIt != threads.end() && threadIt->joinable()) {
-    //                 threadIt->join();
-    //                 // Remove the thread from the pool
-    //                 threads.erase(threadIt);
-    //             }
+    void removeThread(/*std::thread::id id*/) {
 
-    //             // Remove from the timeout tracking map
-    //             it = threadTimeouts.erase(it);
-    //         } else {
-    //             // Move to the next element if not timed out
-    //             ++it;
-    //         }
-    //     }
-    //     mutex.unlock();
-    // }
+        // TWO IDEAS TO REMOVE PROBLEM OF IDENTIFYING WHICH THREAD TERMINATED
+            // JUST REMOVE ALL TERMINATED THREADS (NOT SURE IF WILL PASS TEST 5 IF THEY ARE REMOVED TO QUICKLY)
+            // CREATE FIFO LIST AND REMOVE THE NEXT THREAD UPON NOTIFICATION
+
+        // WHERE TO CALL removeThread()??? BLOCKS EXECUTION
 
 
-    void removeThread(std::thread::id id) {
-        mutex.lock();
-        // Wait for thread to need cleaning up
-        printf("Then here\n");
-        cleanup.wait(&mutex);
+        while (!stop) {
+            mutex.lock();
+            if (cleanup.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
+                for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
+                    // Check if the thread has timed out
+                    if (it->second) {
+                        // Find the thread in the threads vector
+                        auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
+                            return t.get_id() == it->first;
+                        });
 
-        // Find the thread in the list
-        auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
-            return t.get_id() == id;
-        });
+                        // If the thread is found and is joinable, join it and remove from the threads vector
+                        if (threadIt != threads.end() && threadIt->joinable()) {
+                            threadIt->join(); // Wait for the thread to finish
+                            threads.erase(threadIt); // Remove the thread from the pool
+                        }
 
-        // If the thread is found and is joinable, join it and remove from the threads vector
-        if (threadIt != threads.end() && threadIt->joinable()) {
-            threadIt->join();
-            // Remove the thread from the pool
-            threads.erase(threadIt);
+                        // Remove from the timeout tracking map
+                        it = threadTimeouts.erase(it);
+                    } else {
+                        ++it; // Move to the next element if not timed out
+                    }
+                }
+            }
+            mutex.unlock();
         }
-
-        mutex.unlock();
     }
 
     size_t maxThreadCount;
@@ -231,6 +223,7 @@ private:
 
     std::vector<std::thread> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
+    std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
     PcoMutex mutex;
     PcoConditionVariable condition; // To make threads wait for new tasks
     PcoConditionVariable cleanup; // To trigger the removal of timed out threads
