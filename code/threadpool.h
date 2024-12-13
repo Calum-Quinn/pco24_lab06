@@ -77,17 +77,15 @@ public:
 
         // printf("Starting\n");
 
-        removeThreads();
-
         mutex.lock();
         // Check if there is an available thread
-        if (idleThreads != 0) {
+        if (idleThreads > 0) {
             // printf("There are available threads\n");
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // Notify a thread
-            mutex.unlock();
             condition.notifyOne();
+            mutex.unlock();
             // Return true
             return true;
         }
@@ -99,8 +97,8 @@ public:
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // Notify a thread
-            mutex.unlock();
             condition.notifyOne();
+            mutex.unlock();
             // Return true
             return true;
         }
@@ -110,9 +108,8 @@ public:
             // Add the runnable to the queue
             queue.push(std::move(runnable));
             // ??? Block caller until a thread is available ???
-            // Notify a thread
-            mutex.unlock();
             condition.notifyOne();
+            mutex.unlock();
             // Return true
             return true;
         }
@@ -120,6 +117,7 @@ public:
             // Cancel the runnable
         runnable->cancelRun();
         mutex.unlock();
+
             // Return false
         return false;
     }
@@ -147,7 +145,7 @@ private:
             std::unique_ptr<Runnable> task;
             mutex.lock();
             // Initialise timeout token
-            threadTimeouts[std::this_thread::get_id()] = false;
+            // threadTimeouts[std::this_thread::get_id()] = false;
             ++idleThreads;
 
             while (!stop && queue.empty()) {
@@ -158,9 +156,12 @@ private:
 
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
+                    // Start procedure to remove thread once it terminates
+                    removeThread(std::this_thread::get_id()); // Will wait for signal
                     // Terminate the thread and notify of timeout
-                    threadTimeouts[std::this_thread::get_id()] = true;
+                    // threadTimeouts[std::this_thread::get_id()] = true;
                     --idleThreads;
+                    cleanup.notifyOne(); // Signal that thread can be removed
                     mutex.unlock();
                     return;
                 }
@@ -190,28 +191,51 @@ private:
     /**
      * @brief removes all threads that timed out
      */
-    void removeThreads() {
-        mutex.lock(); // Lock to ensure thread safety
-        for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
-            // Check if the thread has timed out
-            if (it->second) {
-                // Find the thread in the threads vector
-                auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
-                    return t.get_id() == it->first;
-                });
+    // void removeThreads() {
+    //     mutex.lock();
+    //     for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
+    //         // Check if the thread has timed out
+    //         if (it->second) {
+    //             // Find the thread in the threads vector
+    //             auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
+    //                 return t.get_id() == it->first;
+    //             });
 
-                // If the thread is found and is joinable, join it and remove from the threads vector
-                if (threadIt != threads.end() && threadIt->joinable()) {
-                    threadIt->join(); // Wait for the thread to finish
-                    threads.erase(threadIt); // Remove the thread from the pool
-                }
+    //             // If the thread is found and is joinable, join it and remove from the threads vector
+    //             if (threadIt != threads.end() && threadIt->joinable()) {
+    //                 threadIt->join();
+    //                 // Remove the thread from the pool
+    //                 threads.erase(threadIt);
+    //             }
 
-                // Remove from the timeout tracking map
-                it = threadTimeouts.erase(it);
-            } else {
-                ++it; // Move to the next element if not timed out
-            }
+    //             // Remove from the timeout tracking map
+    //             it = threadTimeouts.erase(it);
+    //         } else {
+    //             // Move to the next element if not timed out
+    //             ++it;
+    //         }
+    //     }
+    //     mutex.unlock();
+    // }
+
+
+    void removeThread(std::thread::id id) {
+        mutex.lock();
+        // Wait for thread to need cleaning up
+        cleanup.wait(&mutex);
+
+        // Find the thread in the list
+        auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
+            return t.get_id() == id;
+        });
+
+        // If the thread is found and is joinable, join it and remove from the threads vector
+        if (threadIt != threads.end() && threadIt->joinable()) {
+            threadIt->join();
+            // Remove the thread from the pool
+            threads.erase(threadIt);
         }
+
         mutex.unlock();
     }
 
@@ -220,10 +244,11 @@ private:
     std::chrono::milliseconds idleTimeout;
 
     std::vector<std::thread> threads; // Thread pool
-    std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
+    // std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
     PcoMutex mutex;
     PcoConditionVariable condition; // To make threads wait for new tasks
+    PcoConditionVariable cleanup; // To trigger the removal of timed out threads
     size_t idleThreads; // Keep count of number of inactive threads
     bool stop;  // Signals termination
 };
