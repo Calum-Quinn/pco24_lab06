@@ -41,7 +41,7 @@ public:
 class ThreadPool {
 public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
-        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0), stop(false) {}
+        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0), stop(false), managerThread(&ThreadPool::removeThread, this) {}
 
     ~ThreadPool() {
         // TODO : End smoothly
@@ -53,6 +53,7 @@ public:
 
         // Notify all threads so they terminate
         condition.notifyAll();
+        cleanup.notifyOne();
 
         // Join all threads
         for (auto& thread : threads) {
@@ -60,6 +61,9 @@ public:
                 thread.join();
             }
         }
+
+        // Join manager thread
+        managerThread.join();
     }
 
     /*
@@ -132,6 +136,9 @@ public:
 
 private:
 
+    /**
+     * @brief function continually executed by the threads to handle tasks
+     */
     void workerThread() {
         std::thread::id id = std::this_thread::get_id();
         // Start procedure to remove thread if it times out
@@ -139,6 +146,7 @@ private:
 
 
         // THIS COMMAND BLOCKS THE EXECUTION OF THE THREAD !!!!!!
+        // removeThread()
         // WE NEED A WAY OF WAITING THAT CAN BE SIGNALED FOR A SPECIFIC THREAD BUT ONLY WHEN THE THREAD HAS TIMED OUT
         // removeThread(id); // Will wait for signal
         
@@ -188,29 +196,30 @@ private:
 
         // WHERE TO CALL removeThread()??? BLOCKS EXECUTION
 
-
         while (!stop) {
             mutex.lock();
-            if (cleanup.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
-                for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
-                    // Check if the thread has timed out
-                    if (it->second) {
-                        // Find the thread in the threads vector
-                        auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
-                            return t.get_id() == it->first;
-                        });
+            // Wait for signal that there are threads to clean up
+            cleanup.wait(&mutex);
 
-                        // If the thread is found and is joinable, join it and remove from the threads vector
-                        if (threadIt != threads.end() && threadIt->joinable()) {
-                            threadIt->join(); // Wait for the thread to finish
-                            threads.erase(threadIt); // Remove the thread from the pool
-                        }
+            // Check which threads have timed out since last check
+            for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
+                // Check if the thread has timed out
+                if (it->second) {
+                    // Find the thread in the threads vector
+                    auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
+                        return t.get_id() == it->first;
+                    });
 
-                        // Remove from the timeout tracking map
-                        it = threadTimeouts.erase(it);
-                    } else {
-                        ++it; // Move to the next element if not timed out
+                    // If the thread is found and is joinable, join it and remove from the threads vector
+                    if (threadIt != threads.end() && threadIt->joinable()) {
+                        threadIt->join(); // Wait for the thread to finish
+                        threads.erase(threadIt); // Remove the thread from the pool
                     }
+
+                    // Remove from the timeout tracking map
+                    it = threadTimeouts.erase(it);
+                } else {
+                    ++it; // Move to the next element if not timed out
                 }
             }
             mutex.unlock();
@@ -221,6 +230,7 @@ private:
     size_t maxNbWaiting;
     std::chrono::milliseconds idleTimeout;
 
+    std::thread managerThread; // Thread that manages the removal of inactive threads
     std::vector<std::thread> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
     std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
