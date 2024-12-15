@@ -182,29 +182,34 @@ private:
      * @brief function run continuously by the manager thread to remove timed out threads
      */
     void removeThread() {
-        // Run until the thread pool terminates
-        while (!stop) {
+        while (true) {
+            std::unordered_set<std::thread::id> threadsToRemove;
+
             mutex.lock();
-            // Wait for signal that there are threads to clean up
+
             cleanup.wait(&mutex);
 
-            // Check which threads have timed out since last check
-            for (auto it = timedOutThreads.begin(); it != timedOutThreads.end();) {
-                // Find the thread in the threads vector
+            if (stop) {
+                mutex.unlock();
+                return;
+            }
+
+            threadsToRemove = std::move(timedOutThreads);
+            timedOutThreads.clear();
+            mutex.unlock();
+
+            for (const auto& id : threadsToRemove) {
+                mutex.lock();
                 auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
-                    return t.get_id() == *it;
+                    return t.get_id() == id;
                 });
 
-                // If the thread is found and is joinable, join it and remove from the threads vector
                 if (threadIt != threads.end() && threadIt->joinable()) {
                     threadIt->join();
                     threads.erase(threadIt);
                 }
-
-                // Remove from the list of timed out threads and advance the iterator
-                it = timedOutThreads.erase(it);
+                mutex.unlock();
             }
-            mutex.unlock();
         }
     }
 
@@ -215,7 +220,6 @@ private:
     std::thread managerThread; // Thread that manages the removal of inactive threads
     std::vector<std::thread> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
-    std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
     std::unordered_set<std::thread::id> timedOutThreads; // List of threads that have timed out
     PcoMutex mutex; // Locking the shared variables (e.g. idleThreads, stop,...)
     PcoConditionVariable condition; // To make threads wait for new tasks
