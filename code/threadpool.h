@@ -13,6 +13,7 @@
 #include <pcosynchro/pcoconditionvariable.h>
 #include <queue>
 #include <string>
+#include <unordered_set>
 
 class Runnable {
 public:
@@ -43,6 +44,9 @@ public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
         : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0), stop(false), managerThread(&ThreadPool::removeThread, this) {}
 
+    /**
+     * @brief clears up all threads before finally terminating the thread pool
+     */
     ~ThreadPool() {
         // Set termination variable
         mutex.lock();
@@ -127,12 +131,7 @@ private:
     /**
      * @brief function continually executed by the threads to handle tasks
      */
-    void workerThread() {
-        // Retrieve the current thread's id
-        std::thread::id id = std::this_thread::get_id();
-        // Explicitly mark the thread as not finished
-        threadTimeouts[id] == false;
-        
+    void workerThread() {        
         // Keep handling tasks until explicitly stopped
         while (true) {
             std::unique_ptr<Runnable> task;
@@ -147,7 +146,7 @@ private:
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
                     // Indicate that the thread can be removed once signaled
-                    threadTimeouts[id] = true;
+                    timedOutThreads.insert(std::this_thread::get_id());
 
                     // Remove the thread from the list of idle threads to avoid it being considered for tasks
                     --idleThreads;
@@ -190,26 +189,20 @@ private:
             cleanup.wait(&mutex);
 
             // Check which threads have timed out since last check
-            for (auto it = threadTimeouts.begin(); it != threadTimeouts.end();) {
-                // Check if the thread has timed out
-                if (it->second) {
-                    // Find the thread in the threads vector
-                    auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
-                        return t.get_id() == it->first;
-                    });
+            for (auto it = timedOutThreads.begin(); it != timedOutThreads.end();) {
+                // Find the thread in the threads vector
+                auto threadIt = std::find_if(threads.begin(), threads.end(), [&](std::thread& t) {
+                    return t.get_id() == *it;
+                });
 
-                    // If the thread is found and is joinable, join it and remove from the threads vector
-                    if (threadIt != threads.end() && threadIt->joinable()) {
-                        threadIt->join(); // Wait for the thread to finish
-                        threads.erase(threadIt); // Remove the thread from the pool
-                    }
-
-                    // Remove from the timeout tracking map
-                    it = threadTimeouts.erase(it);
-                } else {
-                    // Move to the next element if not timed out
-                    ++it;
+                // If the thread is found and is joinable, join it and remove from the threads vector
+                if (threadIt != threads.end() && threadIt->joinable()) {
+                    threadIt->join();
+                    threads.erase(threadIt);
                 }
+
+                // Remove from the list of timed out threads and advance the iterator
+                it = timedOutThreads.erase(it);
             }
             mutex.unlock();
         }
@@ -223,6 +216,7 @@ private:
     std::vector<std::thread> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
     std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
+    std::unordered_set<std::thread::id> timedOutThreads; // List of threads that have timed out
     PcoMutex mutex; // Locking the shared variables (e.g. idleThreads, stop,...)
     PcoConditionVariable condition; // To make threads wait for new tasks
     PcoConditionVariable cleanup; // To trigger the removal of timed out threads
