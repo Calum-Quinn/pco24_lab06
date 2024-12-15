@@ -79,28 +79,26 @@ public:
         mutex.lock();
         // Check if there is an available thread
         if (idleThreads > 0) {
-            // Add the runnable to the queue
+            // Add the runnable to the queue and notify a waiting thread
             queue.push(std::move(runnable));
-            condition.notifyOne();
             mutex.unlock();
+            condition.notifyOne();
             return true;
         }
         // Else check if the pool can grow
         else if (threads.size() < maxThreadCount) {
             // Create a new thread
             threads.emplace_back(&ThreadPool::workerThread, this);
-            // Add the runnable to the queue
+            // Add the runnable to the queue and notify a waiting thread
             queue.push(std::move(runnable));
-            condition.notifyOne();
             mutex.unlock();
+            condition.notifyOne();
             return true;
         }
         // Else check if less than max are waiting
         else if (queue.size() < maxNbWaiting) {
             // Add the runnable to the queue
             queue.push(std::move(runnable));
-            // ??? Block caller until a thread is available ???
-            condition.notifyOne();
             mutex.unlock();
             return true;
         }
@@ -148,15 +146,15 @@ private:
             while (!stop && queue.empty()) {
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
-                    // Indicate that thread can be removed once signaled
+                    // Indicate that the thread can be removed once signaled
                     threadTimeouts[id] = true;
 
-                    // Remove it from the list of idle threads to avoid it being considered for tasks
+                    // Remove the thread from the list of idle threads to avoid it being considered for tasks
                     --idleThreads;
 
                     // Signal that the thread can be removed
-                    cleanup.notifyOne();
                     mutex.unlock();
+                    cleanup.notifyOne();
                     return;
                 }
             }
