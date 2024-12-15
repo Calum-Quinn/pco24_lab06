@@ -44,18 +44,17 @@ public:
         : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0), stop(false), managerThread(&ThreadPool::removeThread, this) {}
 
     ~ThreadPool() {
-        // TODO : End smoothly
-
-        // Set terminating variable
+        // Set termination variable
         mutex.lock();
         stop = true;
         mutex.unlock();
 
         // Notify all threads so they terminate
         condition.notifyAll();
+        // Notify manager thread so it terminates
         cleanup.notifyOne();
 
-        // Join all threads
+        // Join all worker threads
         for (auto& thread : threads) {
             if (thread.joinable()) {
                 thread.join();
@@ -77,17 +76,13 @@ public:
      * If the runnable has been started, returns true, and else (the last case), return false.
      */
     bool start(std::unique_ptr<Runnable> runnable) {
-        // TODO
-
         mutex.lock();
         // Check if there is an available thread
         if (idleThreads > 0) {
             // Add the runnable to the queue
             queue.push(std::move(runnable));
-            // Notify a thread
             condition.notifyOne();
             mutex.unlock();
-            // Return true
             return true;
         }
         // Else check if the pool can grow
@@ -96,10 +91,8 @@ public:
             threads.emplace_back(&ThreadPool::workerThread, this);
             // Add the runnable to the queue
             queue.push(std::move(runnable));
-            // Notify a thread
             condition.notifyOne();
             mutex.unlock();
-            // Return true
             return true;
         }
         // Else check if less than max are waiting
@@ -109,15 +102,13 @@ public:
             // ??? Block caller until a thread is available ???
             condition.notifyOne();
             mutex.unlock();
-            // Return true
             return true;
         }
-        // Else
-            // Cancel the runnable
+
+        // Cancel the runnable as the queue is full
         runnable->cancelRun();
         mutex.unlock();
 
-            // Return false
         return false;
     }
 
@@ -125,8 +116,7 @@ public:
      * They do not need to be executing a task, just alive.
      */
     size_t currentNbThreads() {
-        // TODO
-
+        // Retrieve the number of threads currently in the list
         mutex.lock();
         size_t count = threads.size();
         mutex.unlock();
@@ -140,29 +130,32 @@ private:
      * @brief function continually executed by the threads to handle tasks
      */
     void workerThread() {
+        // Retrieve the current thread's id
         std::thread::id id = std::this_thread::get_id();
-        // Start procedure to remove thread if it times out
+        // Explicitly mark the thread as not finished
         threadTimeouts[id] == false;
-
-
-        // THIS COMMAND BLOCKS THE EXECUTION OF THE THREAD !!!!!!
-        // removeThread()
-        // WE NEED A WAY OF WAITING THAT CAN BE SIGNALED FOR A SPECIFIC THREAD BUT ONLY WHEN THE THREAD HAS TIMED OUT
-        // removeThread(id); // Will wait for signal
         
+        // Keep handling tasks until explicitly stopped
         while (true) {
             std::unique_ptr<Runnable> task;
+
             mutex.lock();
-            // Initialise timeout token
+
+            // Augment the amount of idle threads so it will be considered for future tasks
             ++idleThreads;
 
+            // Wait for there to be available tasks or for termination to be requested
             while (!stop && queue.empty()) {
                 // Wait for timeout, skip if task received
                 if (!condition.waitForSeconds(&mutex, idleTimeout.count() / 1000)) {
                     // Indicate that thread can be removed once signaled
                     threadTimeouts[id] = true;
+
+                    // Remove it from the list of idle threads to avoid it being considered for tasks
                     --idleThreads;
-                    cleanup.notifyOne(); // Signal that thread can be removed
+
+                    // Signal that the thread can be removed
+                    cleanup.notifyOne();
                     mutex.unlock();
                     return;
                 }
@@ -181,21 +174,18 @@ private:
             --idleThreads;
             mutex.unlock();
 
+            // If it actually received a task, run it
             if (task) {
                 task->run();
             }
         }
     }
 
-
-    void removeThread(/*std::thread::id id*/) {
-
-        // TWO IDEAS TO REMOVE PROBLEM OF IDENTIFYING WHICH THREAD TERMINATED
-            // JUST REMOVE ALL TERMINATED THREADS (NOT SURE IF WILL PASS TEST 5 IF THEY ARE REMOVED TO QUICKLY)
-            // CREATE FIFO LIST AND REMOVE THE NEXT THREAD UPON NOTIFICATION
-
-        // WHERE TO CALL removeThread()??? BLOCKS EXECUTION
-
+    /**
+     * @brief function run continuously by the manager thread to remove timed out threads
+     */
+    void removeThread() {
+        // Run until the thread pool terminates
         while (!stop) {
             mutex.lock();
             // Wait for signal that there are threads to clean up
@@ -219,7 +209,8 @@ private:
                     // Remove from the timeout tracking map
                     it = threadTimeouts.erase(it);
                 } else {
-                    ++it; // Move to the next element if not timed out
+                    // Move to the next element if not timed out
+                    ++it;
                 }
             }
             mutex.unlock();
@@ -234,7 +225,7 @@ private:
     std::vector<std::thread> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
     std::unordered_map<std::thread::id, bool> threadTimeouts; // Map to store whether threads have timed out and need to be removed
-    PcoMutex mutex;
+    PcoMutex mutex; // Locking the shared variables (e.g. idleThreads, stop,...)
     PcoConditionVariable condition; // To make threads wait for new tasks
     PcoConditionVariable cleanup; // To trigger the removal of timed out threads
     size_t idleThreads; // Keep count of number of inactive threads
