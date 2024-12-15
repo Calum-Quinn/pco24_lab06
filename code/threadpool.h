@@ -85,8 +85,8 @@ public:
         if (idleThreads > 0) {
             // Add the runnable to the queue and notify a waiting thread
             queue.push(std::move(runnable));
-            mutex.unlock();
             condition.notifyOne();
+            mutex.unlock();
             return true;
         }
         // Else check if the pool can grow
@@ -95,8 +95,8 @@ public:
             threads.emplace_back(&ThreadPool::workerThread, this);
             // Add the runnable to the queue and notify a waiting thread
             queue.push(std::move(runnable));
-            mutex.unlock();
             condition.notifyOne();
+            mutex.unlock();
             return true;
         }
         // Else check if less than max are waiting
