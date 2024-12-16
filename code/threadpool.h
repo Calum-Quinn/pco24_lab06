@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cassert>
 #include <memory>
+#include <pcosynchro/pcohoaremonitor.h>
 #include <pcosynchro/pcologger.h>
 #include <pcosynchro/pcothread.h>
 #include <pcosynchro/pcomutex.h>
@@ -39,7 +40,7 @@ public:
     virtual std::string id() = 0;
 };
 
-class ThreadPool {
+class ThreadPool : PcoHoareMonitor {
 public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
         : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), idleThreads(0), stop(false), managerThread(&ThreadPool::removeThread, this) {}
