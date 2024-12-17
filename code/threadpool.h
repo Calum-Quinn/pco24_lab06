@@ -49,12 +49,10 @@ public:
      * @brief clears up all threads before finally terminating the thread pool
      */
     ~ThreadPool() {
-        // printf("Starting destructor\n");
         // Set termination variable
         monitorIn();
-        // printf("Got monitor in destructor\n");
         stop = true;
-        // Notify all threads so they terminate
+        // Notify all worker threads so they terminate
         for (auto& thread : threads) {
             signal(workCondition);
         }
@@ -72,7 +70,6 @@ public:
 
         // Join manager thread
         managerThread.join();
-        // printf("Ending destructor\n");
     }
 
     /*
@@ -87,7 +84,6 @@ public:
      */
     bool start(std::unique_ptr<Runnable> runnable) {
         monitorIn();
-        // printf("Monitor in Start\n");
 
         // Check if a task can be added
         if (queue.size() < maxNbWaiting || idleThreads > 0 || threads.size() < maxThreadCount) {
@@ -103,14 +99,12 @@ public:
                 signal(workCondition);
             }
             monitorOut();
-            // printf("Monitor out Task added\n");
             return true;
         }
 
         // Cancel the runnable as the queue is full
         runnable->cancelRun();
         monitorOut();
-        // printf("Monitor out Cancel\n");
         return false;
     }
 
@@ -133,29 +127,27 @@ private:
      */
     void workerThread() {
         while (true) {
+            // Increment number of idle threads and start timeout timer
             monitorIn();
-            // printf("Monitor in Worker\n");
             ++idleThreads;
             auto startTime = std::chrono::steady_clock::now();
 
+            // Until termination is requested
             while (!stop) {
-                // printf("Starting not stop loop\n");
+                // If there are tasks
                 if (!queue.empty()) {
                     // Fetch and execute task
                     std::unique_ptr<Runnable> task = std::move(queue.front());
                     queue.pop();
                     --idleThreads;
                     monitorOut();
-                    // printf("Monitor out Before task\n");
-                    task->run();
-                    // printf("just ran a task\n");
-                    monitorIn();
-                    // printf("Monitor in After task\n");
-                    // printf("Got the monitor after running task\n");
-                    break; // Re-check stop condition after finishing the task
-                }
 
-                // printf("Queue was empty\n");
+                    task->run();
+
+                    monitorIn();
+                    // Break so as not to assume that stop is still false
+                    break;
+                }
 
                 // Check elapsed time since becoming idle
                 auto now = std::chrono::steady_clock::now();
@@ -163,46 +155,33 @@ private:
 
                 // Check if timed out and remove thread if yes
                 if (elapsed >= idleTimeout) {
-                    // printf("Timed out\n");
                     --idleThreads;
+                    // Note as timed out
                     timedOutThreads.insert(std::this_thread::get_id());
-                    // printf("About to signal\n");
-                    signal(cleanupCondition); // Notify manager thread
-                    // printf("Just signaled\n");
+                    // Notify manager thread
+                    signal(cleanupCondition);
                     monitorOut();
-                    // printf("Monitor out Timeout\n");
                     return;
                 }
 
-                // Wait for a fraction of the timeout or until signaled
+                // Define whether the timeout is less than 10ms away
                 auto remainingTime = idleTimeout - elapsed;
                 std::chrono::milliseconds sleepDuration = remainingTime > std::chrono::milliseconds(10) ? std::chrono::milliseconds(10) : remainingTime;
 
-                // Avoid holding a lock during sleep
+                // Sleep for a small while or until timeout if that is less time
                 monitorOut();
-                // printf("Monitor out Before sleep\n");
-                // printf("About to sleep\n");
                 std::this_thread::sleep_for(std::chrono::milliseconds(sleepDuration));
-                // printf("Just slept\n");
                 monitorIn();
-                // printf("Monitor in After sleep, stop = %d\n", stop);
-                // printf("Acquired monitor after sleep\n");
             }
 
-            // printf("Just came out of while not stop loop\n");
-
-            // Handle pool stop condition
+            // If termination was requested, exit
             if (stop && queue.empty()) {
-                // printf("Stop and queue empty\n");
                 --idleThreads;
                 monitorOut();
-                // printf("Monitor out Stop\n");
                 return;
             }
 
             monitorOut();
-            // printf("Monitor out Worker\n");
-            // printf("About to start the main loop again\n");
         }
     }
 
@@ -212,28 +191,28 @@ private:
     void removeThread() {
         while (true) {
             monitorIn();
-            // printf("Monitor in Remove thread\n");
 
+            // Check if termination was requested
             if (stop && timedOutThreads.empty()) {
                 monitorOut();
-                // printf("Monitor out Stop in Remove\n");
-                return; // Exit when stopping and no timed-out threads remain
+                return;
             }
 
             // Wait for a signal or periodically check
             wait(cleanupCondition);
 
-            // printf("Just got notified of cleanup\n");
-
             // Clean up timed-out threads
             for (auto it = threads.begin(); it != threads.end();) {
+                // Check if timedOut thread is found in the list of threads
                 if (timedOutThreads.find(it->get_id()) != timedOutThreads.end()) {
                     if (it->joinable()) {
-                        // printf("About to join thread\n");
                         monitorOut();
+
+                        // Wait for timed out thread to properly finish
                         it->join();
+
                         monitorIn();
-                        // printf("Joined thread\n");
+                        // Remove the thread from the list
                         it = threads.erase(it);
                     }
                 } else {
@@ -241,11 +220,9 @@ private:
                 }
             }
 
-            // printf("Cleared timed out thread\n");
-
+            // Remove all notes of timed out threads
             timedOutThreads.clear();
             monitorOut();
-            // printf("Monitor out Remove threads\n");
         }
     }
 
@@ -259,9 +236,8 @@ private:
     std::unordered_set<std::thread::id> timedOutThreads; // List of threads that have timed out
     size_t idleThreads; // Keep count of number of inactive threads
     bool stop;  // Signals termination
-
-    Condition workCondition;
-    Condition cleanupCondition;
+    Condition workCondition; // To wait for new tasks
+    Condition cleanupCondition; // To wait for threads to time out and need removing
 };
 
 #endif // THREADPOOL_H
