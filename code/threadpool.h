@@ -86,38 +86,26 @@ public:
 
         monitorIn();
 
-        // Check if there is an available thread
-        if (idleThreads > 0) {
-            // Add the runnable to the queue and notify a waiting thread
+        // Check if a task can be added
+        if (queue.size() < maxNbWaiting || idleThreads > 0 || threads.size() < maxThreadCount) {
+            // Add task to queue
             queue.push(std::move(runnable));
-            signal(workCondition);
-            monitorOut();
-            return true;
-        }
-        // Else check if the pool can grow
-        else if (threads.size() < maxThreadCount) {
-            // Create a new thread
-            threads.emplace_back(&ThreadPool::workerThread, this);
-            // Add the runnable to the queue and notify a waiting thread
-            queue.push(std::move(runnable));
-
-            signal(workCondition);
-            monitorOut();
-            return true;
-        }
-        // Else check if less than max are waiting
-        else if (queue.size() < maxNbWaiting) {
-            // Add the runnable to the queue
-            queue.push(std::move(runnable));
+            // Check if available thread
+            if (idleThreads > 0) {
+                signal(workCondition);
+            } 
+            // Check if another thread can be added
+            else if (threads.size() < maxThreadCount) {
+                threads.emplace_back(&ThreadPool::workerThread, this);
+                signal(workCondition);
+            }
             monitorOut();
             return true;
         }
 
         // Cancel the runnable as the queue is full
         runnable->cancelRun();
-
         monitorOut();
-
         return false;
     }
 
@@ -197,24 +185,32 @@ private:
      */
     void removeThread() {
         while (true) {
-
             monitorIn();
-            wait(cleanupCondition);
 
-
-            if (stop) {
+            // If stop is true and no timed-out threads exist, exit the manager thread
+            if (stop && timedOutThreads.empty()) {
                 monitorOut();
                 return;
             }
 
+            // Wait for cleanupCondition or simulate a timeout
+            auto startTime = std::chrono::steady_clock::now();
+            while (timedOutThreads.empty() && !stop) {
+                auto now = std::chrono::steady_clock::now();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime) >= std::chrono::milliseconds(500)) {
+                    break; // Simulate timeout
+                }
+                wait(cleanupCondition);
+            }
+
+            // Clean up timed-out threads
             for (auto it = threads.begin(); it != threads.end();) {
                 if (timedOutThreads.find(it->get_id()) != timedOutThreads.end()) {
                     if (it->joinable()) {
                         it->join();
                         it = threads.erase(it);
                     }
-                }
-                else {
+                } else {
                     ++it;
                 }
             }
@@ -222,6 +218,32 @@ private:
             timedOutThreads.clear();
             monitorOut();
         }
+
+        // while (true) {
+        //     monitorIn();
+        //     wait(cleanupCondition);
+
+
+        //     if (stop) {
+        //         monitorOut();
+        //         return;
+        //     }
+
+        //     for (auto it = threads.begin(); it != threads.end();) {
+        //         if (timedOutThreads.find(it->get_id()) != timedOutThreads.end()) {
+        //             if (it->joinable()) {
+        //                 it->join();
+        //                 it = threads.erase(it);
+        //             }
+        //         }
+        //         else {
+        //             ++it;
+        //         }
+        //     }
+
+        //     timedOutThreads.clear();
+        //     monitorOut();
+        // }
     }
 
     size_t maxThreadCount;
