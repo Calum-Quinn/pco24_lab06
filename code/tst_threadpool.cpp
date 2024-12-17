@@ -283,7 +283,6 @@ TEST_F(ThreadpoolTest, testCase3)
 
         // Wait until completion of each runnable
         PcoThread::usleep(1000 * (RUNTIMEINMS + 30));
-
     }
 
 
