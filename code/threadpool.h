@@ -126,57 +126,64 @@ private:
     /**
      * @brief function continually executed by the threads to handle tasks
      */
-    void workerThread() {        
-        // Keep handling tasks until explicitly stopped
+    void workerThread() {
         while (true) {
-            // printf("Starting the worker thread again\n");
             monitorIn();
-            // printf("Starting the worker thread again2\n");
-
-            // Augment the amount of idle threads so it will be considered for future tasks
             ++idleThreads;
-
             auto startTime = std::chrono::steady_clock::now();
 
-            // While termination has not been requested
             while (!stop) {
                 if (!queue.empty()) {
+                    // Fetch and execute task
                     std::unique_ptr<Runnable> task = std::move(queue.front());
                     queue.pop();
                     --idleThreads;
                     monitorOut();
-
-                    // Run the task
                     task->run();
+                    // printf("just ran a task\n");
                     monitorIn();
-                    break;
+                    // printf("Got the monitor after running task\n");
+                    break; // Re-check stop condition after finishing the task
                 }
 
-                // Check for timeout
+                // Check elapsed time since becoming idle
                 auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime) >= idleTimeout) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime);
+
+                // Check if timed out and remove thread if yes
+                if (elapsed >= idleTimeout) {
                     --idleThreads;
                     timedOutThreads.insert(std::this_thread::get_id());
-                    // Notify that thread can be removed
-                    signal(cleanupCondition);
+                    signal(cleanupCondition); // Notify manager thread
                     monitorOut();
                     return;
                 }
 
-                // Wait for new work or signal to stop
-                // printf("About to wait for work\n");
-                wait(workCondition);
-                // printf("Just got notified of work\n");
+                // Wait for a fraction of the timeout or until signaled
+                auto remainingTime = idleTimeout - elapsed;
+                std::chrono::milliseconds sleepDuration = remainingTime > std::chrono::milliseconds(10) ? std::chrono::milliseconds(10) : remainingTime;
+
+                // Avoid holding a lock during sleep
+                monitorOut();
+                // printf("About to sleep\n");
+                std::this_thread::sleep_for(std::chrono::milliseconds(sleepDuration));
+                // printf("Just slept\n");
+                monitorIn();
+                // printf("Acquired monitor after sleep\n");
             }
 
-            // If termination was signaled and there are no tasks left
+            // printf("Just came out of while not stop loop\n");
+
+            // Handle pool stop condition
             if (stop && queue.empty()) {
+                // printf("Stop and queue empty\n");
                 --idleThreads;
                 monitorOut();
-                // printf("Exiting thread after stop\n");
                 return;
             }
+
             monitorOut();
+            // printf("About to start the main loop again\n");
         }
     }
 
@@ -187,21 +194,13 @@ private:
         while (true) {
             monitorIn();
 
-            // If stop is true and no timed-out threads exist, exit the manager thread
             if (stop && timedOutThreads.empty()) {
                 monitorOut();
-                return;
+                return; // Exit when stopping and no timed-out threads remain
             }
 
-            // Wait for cleanupCondition or simulate a timeout
-            auto startTime = std::chrono::steady_clock::now();
-            while (timedOutThreads.empty() && !stop) {
-                auto now = std::chrono::steady_clock::now();
-                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime) >= std::chrono::milliseconds(500)) {
-                    break; // Simulate timeout
-                }
-                wait(cleanupCondition);
-            }
+            // Wait for a signal or periodically check
+            wait(cleanupCondition);
 
             // Clean up timed-out threads
             for (auto it = threads.begin(); it != threads.end();) {
@@ -218,32 +217,6 @@ private:
             timedOutThreads.clear();
             monitorOut();
         }
-
-        // while (true) {
-        //     monitorIn();
-        //     wait(cleanupCondition);
-
-
-        //     if (stop) {
-        //         monitorOut();
-        //         return;
-        //     }
-
-        //     for (auto it = threads.begin(); it != threads.end();) {
-        //         if (timedOutThreads.find(it->get_id()) != timedOutThreads.end()) {
-        //             if (it->joinable()) {
-        //                 it->join();
-        //                 it = threads.erase(it);
-        //             }
-        //         }
-        //         else {
-        //             ++it;
-        //         }
-        //     }
-
-        //     timedOutThreads.clear();
-        //     monitorOut();
-        // }
     }
 
     size_t maxThreadCount;
