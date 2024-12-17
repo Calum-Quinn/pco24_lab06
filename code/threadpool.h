@@ -141,9 +141,9 @@ private:
     void workerThread() {        
         // Keep handling tasks until explicitly stopped
         while (true) {
-            printf("Starting the worker thread again\n");
+            // printf("Starting the worker thread again\n");
             monitorIn();
-            printf("Starting the worker thread again2\n");
+            // printf("Starting the worker thread again2\n");
 
             // Augment the amount of idle threads so it will be considered for future tasks
             ++idleThreads;
@@ -160,7 +160,7 @@ private:
 
                     // Run the task
                     task->run();
-                    
+                    monitorIn();
                     break;
                 }
 
@@ -169,64 +169,27 @@ private:
                 if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime) >= idleTimeout) {
                     --idleThreads;
                     timedOutThreads.insert(std::this_thread::get_id());
-                    monitorOut();
                     // Notify that thread can be removed
                     signal(cleanupCondition);
+                    monitorOut();
                     return;
                 }
 
                 // Wait for new work or signal to stop
-                printf("About to wait for work\n");
+                // printf("About to wait for work\n");
                 wait(workCondition);
-                printf("Just got notified of work\n");
+                // printf("Just got notified of work\n");
             }
-
-
-            // while (!stop) {
-            //     // Check if available tasks
-            //     if (!queue.empty()) {
-            //         printf("Getting a new task\n");
-            //         std::unique_ptr<Runnable> task = std::move(queue.front());
-            //         queue.pop();
-            //         --idleThreads;
-            //         monitorOut();
-
-            //         // Run the task
-            //         task->run();
-                    
-            //         monitorIn();
-            //         continue;
-            //     }
-
-            //     // Check for timeout
-            //     auto now = std::chrono::steady_clock::now();
-            //     if (std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime) >= idleTimeout) {
-            //         --idleThreads;
-            //         timedOutThreads.insert(std::this_thread::get_id());
-            //         monitorOut();
-            //         // Notify that thread can be removed
-            //         signal(cleanupCondition);
-            //         return;
-            //     }
-
-            //     // Wait for new work or signal to stop
-            //     printf("About to wait for work\n");
-            //     wait(workCondition);
-            // }
 
             // If termination was signaled and there are no tasks left
             if (stop && queue.empty()) {
                 --idleThreads;
                 monitorOut();
-                printf("Exiting thread after stop\n");
+                // printf("Exiting thread after stop\n");
                 return;
             }
             monitorOut();
         }
-    }
-
-    void timer(std::thread::id id, auto startTime) {
-
     }
 
     /**
