@@ -58,7 +58,7 @@ public:
             wait(cleaner);
         }
 
-        // Set termination variable
+        // Set general termination variable
         stop = true;
 
         // Cancel any remaining runnables to avoid leaving them in an undefined state
@@ -120,12 +120,13 @@ public:
 
         // Check if the pool can and needs to grow
         if (threads.size() < maxThreadCount && running == threads.size()) {
-            // Create a new thread
+            // Add a new thread to the pool
             threads.emplace_back(new PcoThread(&ThreadPool::workerThread, this));
             // printf("Just added new thread\n");
             ++running;
         }
 
+        // Add the task to the queue and notify a possible waiting thread
         queue.push(std::move(runnable));
         // printf("Going to wake thread for task\n");
         signal(taskOrTimeout);
@@ -146,24 +147,29 @@ private:
      * @brief function continually executed by the threads to handle tasks
      */
     void workerThread() {
+        // Wait for the thread-specific value so they can be removed dynamically instead of only all at once
         while (!PcoThread::thisThread()->stopRequested()) {
             // printf("Starting worker thread loop\n");
             monitorIn();
 
-            // Wait for a task if the queue is empty
+            // If the queue is empty, wait for a task or timeout
             while (queue.empty() && !stop) {
                 // printf("Going to wait\n");
                 // Note beginning of waiting time
                 auto now = std::chrono::steady_clock::now();
                 times.push({PcoThread::thisThread(), now});
+
+                // Notify the timeout manager so it calculates when to remove the thread in case of timeout
                 signal(cleanupCondition);
                 wait(taskOrTimeout);
-                // Remove the waiting time so as not to be removed
+
+                // If the first time is still this thread, it did not time out
                 if (times.front().first == PcoThread::thisThread()) {
+                    // Remove the waiting time so as not to be removed because of a false timeout
                     times.pop();
                 }
-                // If the entry is no longer in the list, it was removed by the timeout manager
                 else {
+                    // If the thread timed out, exit so it can be removed from the pool
                     --running;
                     monitorOut();
                     return;
@@ -181,7 +187,6 @@ private:
             // Retrieve the next task and execute it
             auto task = std::move(queue.front());
             queue.pop();
-
             // printf("About to run task\n");
             monitorOut();
             task->run();
@@ -210,39 +215,45 @@ private:
                 }
             }
 
-            // Calculate remaining time to timeout
+            // Calculate time since the thread has been waiting for a task
             auto now = std::chrono::steady_clock::now();
             auto next = times.front();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - next.second);
 
+            // If the thread has timed out
             if (elapsed >= idleTimeout) {
                 // printf("Cleaning started\n");
+                // Note that a thread is currently being removed so the destructor does not join it
                 cleaning = true;
                 PcoThread* toRemove = next.first;
 
+                // Remove the entry in the timing list
                 times.pop();
+
+                // Notify the thread that it needs to terminate
                 toRemove->requestStop();
                 signal(taskOrTimeout);
 
                 monitorOut();
-
                 // printf("About to join a thread after timeout\n");
                 toRemove->join();
                 // printf("Joined a thread after timeout\n");
-
                 monitorIn();
 
+                // Remove the terminated thread from the pool
                 auto it = std::find(threads.begin(), threads.end(), toRemove);
                 if (it != threads.end()) {
                     // printf("Erasing timed out thread\n");
                     threads.erase(it);
                 }
+                // Notify the destructor it can now join all remaining threads
                 cleaning = false;
                 // printf("Cleaning finished\n");
                 signal(cleaner);
                 monitorOut();
             }
             else {
+                // If the next thread has not yet timed out, sleep until the next probable timeout
                 auto sleep = idleTimeout - elapsed;
                 monitorOut();
                 PcoThread::usleep(sleep.count() * 1000);
@@ -256,15 +267,14 @@ private:
 
     PcoThread managerThread; // Thread that manages the removal of inactive threads
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
+    std::vector<PcoThread*> threads; // Thread pool
+    std::queue<std::pair<PcoThread*, std::chrono::steady_clock::time_point>> times; // Keeps track of which threads have been waiting since when
     size_t running; // Keep track of how many threads are currently running
-    bool stop;  // Signals termination
+    bool stop;  // Signals general termination
     bool cleaning; // Signals that a timed out thread is being removed and therefore should not be joined by the destructor
-    Condition taskOrTimeout; // Checker whether there are tasks waiting
+    Condition taskOrTimeout; // To wait for a new task or until timeout
     Condition cleanupCondition; // To wait for threads to time out and need removing
     Condition cleaner; // So that the timeout manager can signal the destructor once a thread has been removed
-
-    std::vector<PcoThread*> threads;
-    std::queue<std::pair<PcoThread*, std::chrono::steady_clock::time_point>> times;
 };
 
 #endif // THREADPOOL_H
