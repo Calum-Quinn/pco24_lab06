@@ -51,14 +51,15 @@ public:
     ~ThreadPool() {
         monitorIn();
 
+        printf("Just started destructor\n");
+
         // Set termination variable
         stop = true;
 
         // Cancel any remaining runnables to avoid leaving them in an undefined state
         while (!queue.empty()) {
-            std::unique_ptr<Runnable> task = std::move(queue.front());
+            queue.front()->cancelRun();
             queue.pop();
-            task->cancelRun();
         }
 
         // Notify manager thread so it terminates
@@ -67,18 +68,26 @@ public:
 
         // Notify all worker threads so they terminate
         for (auto& thread : threads) {
-            signal(notEmpty);
+            printf("Going to wake thread for destruction\n");
+            // thread->requestStop();
+            signal(taskOrTimeout);
         }
 
         monitorOut();
 
-        // Join manager thread
-        managerThread.join();
+        printf("Going to join all threads\n");
 
         // Join all worker threads
         for (auto& thread : threads) {
             thread->join();
         }
+
+        printf("Joined all worker threads\n");
+
+        // Join manager thread
+        managerThread.join();
+
+        printf("Joined manger thread\n");
     }
 
     /*
@@ -107,11 +116,13 @@ public:
         if (threads.size() < maxThreadCount && running == threads.size()) {
             // Create a new thread
             threads.emplace_back(new PcoThread(&ThreadPool::workerThread, this));
+            printf("Just added new thread\n");
             ++running;
         }
 
         queue.push(std::move(runnable));
-        signal(notEmpty);
+        printf("Going to wake thread for task\n");
+        signal(taskOrTimeout);
         monitorOut();
         return true;
     }
@@ -134,16 +145,24 @@ private:
 
             // Wait for a task if the queue is empty
             while (queue.empty() && !stop) {
+                printf("Going to wait\n");
                 // Note beginning of waiting time
-                startingTimes.push(std::chrono::steady_clock::now());
+                auto now = std::chrono::steady_clock::now();
+                times.push({threads.front(), now});
                 signal(cleanupCondition);
-                wait(notEmpty);
+                wait(taskOrTimeout);
                 // Remove the waiting time so as not to be removed
-                startingTimes.pop();
+                times.pop();
+                printf("Just removed times entry\n");
+                if (PcoThread::thisThread()->stopRequested()) {
+                    printf("About to quit thread after stop requested\n");
+                    return;
+                }
             }
 
             // Check if termination was requested or if there are no tasks available and quit
             if (stop || queue.empty()) {
+                printf("About to stop\n");
                 --running;
                 monitorOut();
                 return;
@@ -153,6 +172,7 @@ private:
             std::unique_ptr<Runnable> task = std::move(queue.front());
             queue.pop();
 
+            printf("About to run task\n");
             monitorOut();
             task->run();
         }
@@ -166,27 +186,51 @@ private:
             monitorIn();
 
             // Wait for the next thread to need cleaning up
-            if (startingTimes.empty()) {
+            if (times.empty()) {
+                printf("Going to wait for cleanup request\n");
                 wait(cleanupCondition);
+                printf("Received cleanup request\n");
 
                 // Check if awakened for termination
                 if (PcoThread::thisThread()->stopRequested()) {
+                    printf("Going to stop managerThread\n");
                     monitorOut();
                     return;
                 }
             }
 
             // Calculate remaining time to timeout
-            std::chrono::milliseconds tilTimeout = idleTimeout - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startingTimes.front());
+            auto tilTimeout = idleTimeout - std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - times.front().second);
             monitorOut();
 
             // Wait until potential timeout
             PcoThread::usleep(tilTimeout.count() * (uint64_t) 1000);
 
             monitorIn();
+
+            if (PcoThread::thisThread()->stopRequested()) {
+                printf("Going to stop managerThread\n");
+                monitorOut();
+                return;
+            }
+
             // Check that the first time is past timeout
-            while (!startingTimes.empty() && std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - startingTimes.front()) > tilTimeout) {
-                signal(notEmpty);
+            while (!times.empty() && std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - times.front().second) > tilTimeout) {
+                // Signal end of thread and wait for it to end
+                printf("Going to wake thread for timeout\n");
+                PcoThread* toRemove = times.front().first;
+                times.front().first->requestStop();
+                signal(taskOrTimeout);
+                printf("About to join timed out thread\n");
+                toRemove->join();
+                printf("Just joined timed out thread\n");
+
+                // Remove the thread from the list
+                auto it = std::find(threads.begin(), threads.end(), toRemove);
+                if ( it != threads.end()) {
+                    threads.erase(it);
+                }
+                printf("Erased timed out thread\n");
             }
             monitorOut();
         }
@@ -197,13 +241,14 @@ private:
     std::chrono::milliseconds idleTimeout;
 
     PcoThread managerThread; // Thread that manages the removal of inactive threads
-    std::vector<std::unique_ptr<PcoThread>> threads; // Thread pool
     std::queue<std::unique_ptr<Runnable>> queue; // List of waiting runnables
-    std::queue<std::chrono::steady_clock::time_point> startingTimes; // Keep of track of when the threads start waiting for tasks
     size_t running; // Keep track of how many threads are currently running
     bool stop;  // Signals termination
-    Condition notEmpty; // Checker whether there are tasks waiting
+    Condition taskOrTimeout; // Checker whether there are tasks waiting
     Condition cleanupCondition; // To wait for threads to time out and need removing
+
+    std::vector<PcoThread*> threads;
+    std::queue<std::pair<PcoThread*, std::chrono::steady_clock::time_point>> times;
 };
 
 #endif // THREADPOOL_H
