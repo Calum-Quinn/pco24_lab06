@@ -43,15 +43,15 @@ public:
 class ThreadPool : PcoHoareMonitor {
 public:
     ThreadPool(int maxThreadCount, int maxNbWaiting, std::chrono::milliseconds idleTimeout)
-        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), running(0), stop(false), cleaning(false), managerThread(&ThreadPool::timing, this) {}
+        : maxThreadCount(maxThreadCount), maxNbWaiting(maxNbWaiting), idleTimeout(idleTimeout), running(0), stop(false), cleaning(false), managerThread(&ThreadPool::timing, this) {
+            threads.reserve(maxThreadCount);
+        }
 
     /**
      * @brief clears up all threads before finally terminating the thread pool
      */
     ~ThreadPool() {
         monitorIn();
-
-        // printf("Just started destructor\n");
 
         // Make sure the timeout manager is not currently removing a thread
         while (cleaning) {
@@ -73,27 +73,18 @@ public:
 
         // Notify all worker threads so they terminate
         for (auto& thread : threads) {
-            // printf("Going to wake thread for destruction\n");
             signal(taskOrTimeout);
         }
 
         monitorOut();
 
-        // printf("Going to join all threads\n");
-
         // Join all worker threads
         for (auto& thread : threads) {
-            // printf("Going to join worker thread\n");
             thread->join();
-            // printf("Joined worker thread\n");
         }
-
-        // printf("Joined all worker threads\n");
 
         // Join manager thread
         managerThread.join();
-
-        // printf("Joined manger thread\n");
     }
 
     /*
@@ -122,13 +113,11 @@ public:
         if (threads.size() < maxThreadCount && running == threads.size()) {
             // Add a new thread to the pool
             threads.emplace_back(new PcoThread(&ThreadPool::workerThread, this));
-            // printf("Just added new thread\n");
             ++running;
         }
 
         // Add the task to the queue and notify a possible waiting thread
         queue.push(std::move(runnable));
-        // printf("Going to wake thread for task\n");
         signal(taskOrTimeout);
         monitorOut();
         return true;
@@ -149,12 +138,10 @@ private:
     void workerThread() {
         // Wait for the thread-specific value so they can be removed dynamically instead of only all at once
         while (!PcoThread::thisThread()->stopRequested()) {
-            // printf("Starting worker thread loop\n");
             monitorIn();
 
             // If the queue is empty, wait for a task or timeout
             while (queue.empty() && !stop) {
-                // printf("Going to wait\n");
                 // Note beginning of waiting time
                 auto now = std::chrono::steady_clock::now();
                 times.push({PcoThread::thisThread(), now});
@@ -178,7 +165,6 @@ private:
 
             // Check if termination was requested or if there are no tasks available and quit
             if (stop || queue.empty()) {
-                // printf("About to stop\n");
                 --running;
                 monitorOut();
                 return;
@@ -187,10 +173,8 @@ private:
             // Retrieve the next task and execute it
             auto task = std::move(queue.front());
             queue.pop();
-            // printf("About to run task\n");
             monitorOut();
             task->run();
-            // printf("Finished running task\n");
         }
     }
 
@@ -202,17 +186,14 @@ private:
             monitorIn();
 
             // Wait for the next thread to need cleaning up
-            if (times.empty()) {
-                // printf("Going to wait for cleanup request\n");
+            if (times.empty() && !stop) {
                 wait(cleanupCondition);
-                // printf("Received cleanup request\n");
+            }
 
-                // Check if awakened for termination
-                if (stop) {
-                    // printf("Going to stop managerThread\n");
-                    monitorOut();
-                    return;
-                }
+            // Check if awakened for termination
+            if (stop) {
+                monitorOut();
+                return;
             }
 
             // Calculate time since the thread has been waiting for a task
@@ -222,7 +203,6 @@ private:
 
             // If the thread has timed out
             if (elapsed >= idleTimeout) {
-                // printf("Cleaning started\n");
                 // Note that a thread is currently being removed so the destructor does not join it
                 cleaning = true;
                 PcoThread* toRemove = next.first;
@@ -235,20 +215,16 @@ private:
                 signal(taskOrTimeout);
 
                 monitorOut();
-                // printf("About to join a thread after timeout\n");
                 toRemove->join();
-                // printf("Joined a thread after timeout\n");
                 monitorIn();
 
                 // Remove the terminated thread from the pool
                 auto it = std::find(threads.begin(), threads.end(), toRemove);
                 if (it != threads.end()) {
-                    // printf("Erasing timed out thread\n");
                     threads.erase(it);
                 }
                 // Notify the destructor it can now join all remaining threads
                 cleaning = false;
-                // printf("Cleaning finished\n");
                 signal(cleaner);
                 monitorOut();
             }
