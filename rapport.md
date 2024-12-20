@@ -13,6 +13,10 @@
 - [Introduction](#introduction)
 - [Conception](#conception)
   - [Choix d'implémentation](#choix-dimplémentation)
+    - [Gestion des timeouts](#gestion-des-timeouts)
+      - [Thread de gestion](#thread-de-gestion)
+      - [Queue de valeurs temporels](#queue-de-valeurs-temporels)
+      - [Bloquage du destructeur](#bloquage-du-destructeur)
 - [Tests](#tests)
 - [Conclusion](#conclusion)
 
